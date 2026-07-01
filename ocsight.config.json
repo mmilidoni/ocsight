@@ -11,7 +11,7 @@
     "include_raw_data": false
   },
   "paths": {
-    "data_dir": "/Users/killerkidbo/.local/share/opencode/storage/message",
+    "data_dir": "/Users/killerkidbo/.local/share/opencode",
     "export_dir": "./exports",
     "cache_dir": "/Users/killerkidbo/.cache/ocsight"
   },

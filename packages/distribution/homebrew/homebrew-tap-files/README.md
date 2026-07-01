@@ -1,11 +1,11 @@
-# heyhuynhgiabuu/homebrew-tap
+# mmilidoni/homebrew-tap
 
-Homebrew formulae for heyhuynhgiabuu's projects.
+Homebrew formulae for mmilidoni's projects.
 
 ## Installation
 
 ```bash
-brew tap heyhuynhgiabuu/tap
+brew tap mmilidoni/tap
 ```
 
 ## Formulae

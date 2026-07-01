@@ -28,8 +28,9 @@ try {
       __PACKAGE_VERSION__: JSON.stringify(version),
     },
     external: [
-      "@heyhuynhgiabuu/ocsight-cli",
+      "@mmilidoni/ocsight-cli",
       "bun",
+      "bun:sqlite",
       "fs",
       "path",
       "os",

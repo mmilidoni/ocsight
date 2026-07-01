@@ -36,7 +36,7 @@ async function main() {
     return new Promise((resolve, reject) => {
       const child = spawn(
         "npm",
-        ["view", "@heyhuynhgiabuu/ocsight", "version"],
+        ["view", "@mmilidoni/ocsight-cli", "version"],
         {
           stdio: "pipe",
         },

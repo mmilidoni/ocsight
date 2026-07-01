@@ -1,5 +1,5 @@
 {
-  "name": "ocsight",
+  "name": "@mmilidoni/ocsight-cli",
   "version": "1.2.2",
   "description": "OpenCode ecosystem observability platform",
   "main": "index.js",
@@ -25,7 +25,7 @@
     "analytics",
     "cli"
   ],
-  "author": "heyhuynhgiabuu",
+  "author": "mmilidoni",
   "license": "MIT",
   "files": [
     "index.js",

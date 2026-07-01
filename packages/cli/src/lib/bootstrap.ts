@@ -17,7 +17,7 @@ const ExportConfig = z.object({
 });
 
 const PathsConfig = z.object({
-  data_dir: z.string().default("~/.local/share/opencode/storage/message"),
+  data_dir: z.string().default("~/.local/share/opencode"),
   export_dir: z.string().default("./exports"),
   cache_dir: z.string().default("~/.cache/ocsight"),
 });

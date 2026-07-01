@@ -6,7 +6,7 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
     assignees:
-      - "heyhuynhgiabuu"
+      - "mmilidoni"
     ignore:
       # Ignore major version updates for stable dependencies
       - dependency-name: "@types/node"
@@ -26,7 +26,7 @@ updates:
       interval: "monthly" # Less frequent for actions
     open-pull-requests-limit: 3
     assignees:
-      - "heyhuynhgiabuu"
+      - "mmilidoni"
     ignore:
       # Only patch and minor updates for actions
       - dependency-name: "*"

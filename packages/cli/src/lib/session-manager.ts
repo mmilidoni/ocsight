@@ -1,8 +1,10 @@
 import { glob } from "glob";
-import { watch } from "fs/promises";
+import { watch, stat as fsStat } from "fs/promises";
 import { join } from "path";
-import { readFile, stat } from "fs/promises";
+import { readFile } from "fs/promises";
 import { runtime } from "./runtime-compat.js";
+import { openDb, closeDb, queryAll } from "./database.js";
+import { getDefaultOpenCodePath } from "./data.js";
 
 export interface SessionIndex {
   id: string;
@@ -18,10 +20,7 @@ export interface MessageSummary {
     input: number;
     output: number;
     reasoning?: number;
-    cache?: {
-      write: number;
-      read: number;
-    };
+    cache?: { write: number; read: number };
   };
   cost?: number;
   modelID?: string;
@@ -41,19 +40,17 @@ export interface RecentActivity {
 export interface SessionData {
   id: string;
   title: string;
-  time: {
-    created: number;
-    updated?: number;
-  };
+  time: { created: number; updated?: number };
   messages: MessageSummary[];
   message_count: number;
   tokens_used: number;
   cost_cents: number;
   context_used: number;
-  model: {
-    provider: string;
-    model: string;
-  };
+  model: { provider: string; model: string };
+}
+
+function getDefaultDatabasePath(): string {
+  return join(getDefaultOpenCodePath(), "opencode.db");
 }
 
 export class SessionManager {
@@ -65,26 +62,62 @@ export class SessionManager {
   } | null = null;
   private watcher: AbortController | null = null;
   private dataDir: string = "";
+  private useDb: boolean = false;
 
   async init(dataDir: string, options?: { quiet?: boolean }): Promise<void> {
     this.dataDir = dataDir;
+    // Check if DB exists
+    try {
+      await fsStat(join(dataDir, "opencode.db"));
+      this.useDb = true;
+    } catch {
+      this.useDb = false;
+    }
     await this.buildIndex(options?.quiet);
   }
 
   private async buildIndex(quiet: boolean = false): Promise<void> {
-    const sessionDir = join(this.dataDir, "storage", "session");
-
     this.sessionIndex.clear();
 
+    if (this.useDb) {
+      await this.buildIndexFromDb(quiet);
+    } else {
+      await this.buildIndexFromFiles(quiet);
+    }
+  }
+
+  private async buildIndexFromDb(quiet: boolean): Promise<void> {
+    const db = await openDb(getDefaultDatabasePath(), { readonly: true });
+    try {
+      const rows = queryAll(db, `SELECT id, time_created, time_updated FROM session`);
+      for (const row of rows) {
+        this.sessionIndex.set(row.id, {
+          id: row.id,
+          mtime: row.time_updated || row.time_created,
+          size: 0,
+          filePath: row.id,
+        });
+      }
+      if (!quiet) {
+        console.log(
+          `Session index built: ${this.sessionIndex.size} sessions (from database)`,
+        );
+      }
+    } finally {
+      closeDb(db);
+    }
+  }
+
+  private async buildIndexFromFiles(quiet: boolean): Promise<void> {
+    const sessionDir = join(this.dataDir, "storage", "session");
     const files = await glob("**/ses_*.json", { cwd: sessionDir });
 
     for (const filePath of files) {
       const fullPath = join(sessionDir, filePath);
-      const stats = await stat(fullPath).catch(() => null);
+      const stats = await fsStat(fullPath).catch(() => null);
       if (!stats) continue;
 
       const id = this.extractSessionId(filePath);
-
       this.sessionIndex.set(id, {
         id,
         mtime: stats.mtime.getTime(),
@@ -114,13 +147,113 @@ export class SessionManager {
       return this.activeSession.data;
     }
 
-    const file = runtime.file(index.filePath);
+    if (this.useDb) {
+      return this.loadSessionFromDb(sessionId, index.mtime);
+    }
+    return this.loadSessionFromFiles(sessionId, index);
+  }
 
+  private async loadSessionFromDb(
+    sessionId: string,
+    mtime: number,
+  ): Promise<SessionData | null> {
+    const db = await openDb(getDefaultDatabasePath(), { readonly: true });
+    try {
+      const row = queryAll(
+        db,
+        `SELECT * FROM session WHERE id = ?`,
+        sessionId,
+      );
+      if (!row || row.length === 0) return null;
+      const s = row[0];
+
+      // Parse model JSON
+      let provider = "unknown";
+      let model = "unknown";
+      if (s.model) {
+        try {
+          const parsed = typeof s.model === "string" ? JSON.parse(s.model) : s.model;
+          provider = parsed.providerID || "unknown";
+          model = parsed.id || "unknown";
+        } catch {
+          // fall through
+        }
+      }
+
+      // Load messages
+      const messageRows = queryAll(
+        db,
+        `SELECT id, data, time_created FROM message WHERE session_id = ? ORDER BY time_created`,
+        sessionId,
+      );
+
+      const messages: MessageSummary[] = messageRows.map((row: any) => {
+        let msgData: any = {};
+        try {
+          msgData = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+        } catch {
+          // empty
+        }
+        const tokens = msgData.tokens || {};
+        return {
+          role: msgData.role || "user",
+          created: row.time_created,
+          tokens: {
+            input: tokens.input || 0,
+            output: tokens.output || 0,
+            reasoning: tokens.reasoning,
+            cache: {
+              write: tokens.cache?.write || 0,
+              read: tokens.cache?.read || 0,
+            },
+          },
+          cost: msgData.cost,
+          modelID: msgData.modelID,
+          providerID: msgData.providerID,
+        } as MessageSummary;
+      });
+
+      const tokensUsed =
+        (s.tokens_input || 0) +
+        (s.tokens_output || 0) +
+        (s.tokens_reasoning || 0) +
+        (s.tokens_cache_read || 0) +
+        (s.tokens_cache_write || 0);
+
+      const costCents =
+        typeof s.cost === "number" && isFinite(s.cost) && !isNaN(s.cost)
+          ? Math.round(s.cost * 100)
+          : 0;
+
+      const context_used = this.calculateContext(messages);
+
+      const data: SessionData = {
+        id: s.id,
+        title: s.title || "Untitled",
+        time: { created: s.time_created, updated: s.time_updated },
+        messages,
+        message_count: messages.length,
+        tokens_used: tokensUsed,
+        cost_cents: costCents,
+        context_used,
+        model: { provider, model },
+      };
+
+      this.activeSession = { id: sessionId, data, mtime };
+      return data;
+    } finally {
+      closeDb(db);
+    }
+  }
+
+  private async loadSessionFromFiles(
+    sessionId: string,
+    index: SessionIndex,
+  ): Promise<SessionData | null> {
+    const file = runtime.file(index.filePath);
     try {
       const sessionMeta = await file.json();
-
       const messages = await this.loadMessagesForSession(sessionId);
-
       const tokens_used = this.calculateTokens(messages);
       const cost_cents = this.calculateCost(messages);
       const context_used = this.calculateContext(messages);
@@ -139,7 +272,6 @@ export class SessionManager {
       };
 
       this.activeSession = { id: sessionId, data, mtime: index.mtime };
-
       return data;
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
@@ -172,7 +304,7 @@ export class SessionManager {
         const message = JSON.parse(content);
         if (!message) continue;
 
-        const summary: MessageSummary = {
+        messages.push({
           role: message.role,
           created: message.time?.created || 0,
           tokens: {
@@ -187,9 +319,7 @@ export class SessionManager {
           cost: message.cost,
           modelID: message.modelID,
           providerID: message.providerID,
-        };
-
-        messages.push(summary);
+        });
       }
     } catch (error) {
       if (
@@ -235,17 +365,56 @@ export class SessionManager {
 
     this.watcher = new AbortController();
 
+    if (this.useDb) {
+      this.startDbWatcher(onChange);
+    } else {
+      this.startFileWatcher(onChange);
+    }
+  }
+
+  private startDbWatcher(onChange: (sessionId: string) => void): void {
+    const dbPath = getDefaultDatabasePath();
+    let lastMtime = 0;
+
+    const poll = async () => {
+      try {
+        const stats = await fsStat(dbPath);
+        const currentMtime = stats.mtime.getTime();
+        if (lastMtime > 0 && currentMtime > lastMtime) {
+          // Rebuild index and notify
+          await this.buildIndex(true);
+          const recent = this.getRecentSessions(3);
+          for (const s of recent) {
+            onChange(s.id);
+          }
+        }
+        lastMtime = currentMtime;
+      } catch {
+        // ignore
+      }
+    };
+
+    // Initial stat
+    fsStat(dbPath).then((s) => { lastMtime = s.mtime.getTime(); }).catch(() => {});
+
+    const interval = setInterval(poll, 1000);
+    this.watcher!.signal.addEventListener("abort", () => {
+      clearInterval(interval);
+    });
+  }
+
+  private startFileWatcher(onChange: (sessionId: string) => void): void {
     const messageDir = join(this.dataDir, "storage", "message");
     const debounceMap = new Map<string, NodeJS.Timeout>();
 
     (async () => {
       try {
-        const watcher = watch(messageDir, {
+        const fileWatcher = watch(messageDir, {
           recursive: true,
           signal: this.watcher!.signal,
         });
 
-        for await (const event of watcher) {
+        for await (const event of fileWatcher) {
           if (event.filename?.includes("msg_")) {
             const sessionId = this.extractSessionIdFromMessage(event.filename);
             if (sessionId) {
@@ -298,13 +467,10 @@ export class SessionManager {
 
   private calculateTokens(messages: MessageSummary[]): number {
     return messages.reduce((total, msg) => {
-      const tokenSum =
-        msg.tokens.input +
-        msg.tokens.output +
+      return total + msg.tokens.input + msg.tokens.output +
         (msg.tokens.reasoning || 0) +
         (msg.tokens.cache?.read || 0) +
         (msg.tokens.cache?.write || 0);
-      return total + tokenSum;
     }, 0);
   }
 
@@ -381,11 +547,8 @@ export class SessionManager {
     );
 
     const totalTokens =
-      tokenTotals.input +
-      tokenTotals.output +
-      tokenTotals.reasoning +
-      tokenTotals.cacheWrite +
-      tokenTotals.cacheRead;
+      tokenTotals.input + tokenTotals.output + tokenTotals.reasoning +
+      tokenTotals.cacheWrite + tokenTotals.cacheRead;
 
     let cost = 0;
     if (model?.cost) {

@@ -20,12 +20,14 @@ The ocsight CLI provides comprehensive access to all OpenCode usage data and fun
 
 ### Data Sources
 
-ocsight reads directly from OpenCode's local storage:
+ocsight reads directly from OpenCode's SQLite database:
 
 ```
-~/.local/share/opencode/storage/
-├── session/<project-hash>/ses_*.json    # Session metadata
-└── message/<session-id>/msg_*.json      # Individual messages
+~/.local/share/opencode/opencode.db
+├── session        # Session metadata + pre-aggregated tokens/cost
+├── message        # Individual messages with JSON data blobs
+├── part           # Message parts (tool calls, reasoning)
+└── project        # Project workspace information
 ```
 
 ### CLI Integration

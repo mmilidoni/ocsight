@@ -163,12 +163,14 @@ Generated: 2025-09-15
 
 ### Data Storage
 
-ocsight reads data from OpenCode's storage directory:
+ocsight reads data from the OpenCode SQLite database:
 
 ```
-~/.local/share/opencode/storage/
-├── session/<project-hash>/ses_*.json    # Session metadata
-└── message/<session-id>/msg_*.json      # Individual messages
+~/.local/share/opencode/opencode.db
+├── session        # Session metadata + pre-aggregated tokens/cost
+├── message        # Individual messages with JSON data blobs
+├── part           # Message parts (tool calls, reasoning)
+└── project        # Project workspace information
 ```
 
 ## Session Format

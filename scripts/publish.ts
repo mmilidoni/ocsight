@@ -64,12 +64,12 @@ if (!snapshot && !dry) {
   run("git push origin HEAD --tags --no-verify --force");
 
   const previous = await fetchJson(
-    "https://api.github.com/repos/heyhuynhgiabuu/ocsight/releases/latest",
+    "https://api.github.com/repos/mmilidoni/ocsight/releases/latest",
   ).then((data: any) => data.tag_name);
 
   console.log("finding commits between", previous, "and", "HEAD");
   const commits = await fetchJson(
-    `https://api.github.com/repos/heyhuynhgiabuu/ocsight/compare/${previous}...HEAD`,
+    `https://api.github.com/repos/mmilidoni/ocsight/compare/${previous}...HEAD`,
   ).then((data: any) => data.commits || []);
 
   const raw = commits.map(
@@ -116,9 +116,8 @@ if (!snapshot && !dry) {
       `gh release create v${version} --title "v${version}" --notes "${notes}" ${zipFiles}`,
     );
 
-    // Update Homebrew formula
-    console.log("🍺 Updating Homebrew formula...");
-    await updateHomebrew(version);
+    // Update Homebrew formula (disabled: needs mmilidoni/homebrew-tap repo)
+    // await updateHomebrew(version);
   }
 }
 

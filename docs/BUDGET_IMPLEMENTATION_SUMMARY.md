@@ -130,7 +130,7 @@ Expected output:
     "include_raw_data": false
   },
   "paths": {
-    "data_dir": "~/.local/share/opencode/storage/message",
+    "data_dir": "~/.local/share/opencode",
     "export_dir": "./exports",
     "cache_dir": "~/.cache/ocsight"
   },

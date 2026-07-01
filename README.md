@@ -17,13 +17,13 @@ ocsight reads your OpenCode sessions and shows you exactly what you're spending:
 
 ```bash
 # macOS/Linux (Homebrew)
-brew install heyhuynhgiabuu/tap/ocsight
+brew install mmilidoni/tap/ocsight
 
 # Node.js (npm)
-npm install -g ocsight
+npm install -g @mmilidoni/ocsight-cli
 
 # Direct download
-curl -L https://github.com/heyhuynhgiabuu/ocsight/releases/latest/download/ocsight-$(uname -s)-$(uname -m).zip | tar -xz
+curl -L https://github.com/mmilidoni/ocsight/releases/latest/download/ocsight-$(uname -s)-$(uname -m).zip | tar -xz
 ```
 
 ## Quick Start
@@ -246,11 +246,11 @@ Real costs from actual model pricing, no estimates
 
 Built with Bun for maximum performance:
 
-- Zstd compression (faster/smaller than gzip)
+- Direct SQLite reads with indexed queries
 - SIMD-accelerated ANSI processing
 - Native TypeScript execution
 - Concurrent test execution
-- Handles 10k+ sessions instantly with optimized caching
+- Handles 10k+ sessions instantly with direct database access
 
 ### 💰 Smart Budgets
 
@@ -272,7 +272,7 @@ Runs locally, never sends your data anywhere
 
 - Bun runtime (recommended) or Node.js 18+
 - OpenCode installed
-- Session data in `~/.local/share/opencode/storage/`
+- OpenCode session database at `~/.local/share/opencode/opencode.db`
 
 ## Performance with Bun
 
@@ -286,7 +286,7 @@ ocsight is optimized for Bun v1.3+:
 
 When running with Bun, you automatically get:
 
-- Native zstd compression for cache (faster + smaller than gzip)
+- Native `bun:sqlite` for fast database access
 - SIMD-accelerated ANSI stripping in live monitoring
 - OS-native credential storage for secrets
 - Faster JSON parsing and file I/O
@@ -295,18 +295,20 @@ Node.js fallbacks ensure full compatibility without Bun-specific features.
 
 ## Data Sources
 
-ocsight reads from your local OpenCode storage:
+ocsight reads from the OpenCode SQLite database:
 
 ```
-~/.local/share/opencode/storage/
-├── session/<project-hash>/ses_*.json   # Session metadata
-└── message/<session-id>/msg_*.json     # Individual messages
+~/.local/share/opencode/opencode.db
+├── session        # Session metadata + pre-aggregated tokens/cost
+├── message        # Individual messages with JSON data blobs
+├── part           # Message parts (tool calls, reasoning)
+└── project        # Project workspace information
 ```
 
 ## Development
 
 ```bash
-git clone https://github.com/heyhuynhgiabuu/ocsight
+git clone https://github.com/mmilidoni/ocsight
 cd ocsight
 bun install
 bun run build
@@ -341,7 +343,7 @@ Native executables are built via CI:
 - **macOS ARM64** - Apple Silicon build with code signing
 - **Windows x64** - Windows build with .exe output
 
-Download from [releases page](https://github.com/heyhuynhgiabuu/ocsight/releases).
+Download from [releases page](https://github.com/mmilidoni/ocsight/releases).
 
 ## Configuration
 
@@ -358,7 +360,7 @@ ocsight config doctor               # Validate setup
 **No data showing?**
 
 - Check OpenCode is installed: `which opencode`
-- Verify data exists: `ls ~/.local/share/opencode/storage/`
+- Verify database exists: `ls ~/.local/share/opencode/opencode.db`
 - Run doctor: `ocsight config doctor`
 
 **Wrong costs?**
@@ -369,10 +371,9 @@ ocsight config doctor               # Validate setup
 
 **Performance issues?**
 
-- First run caches data (may be slow)
+- First run loads all sessions (may be slow for large histories)
 - Use `--days` flag to limit data range
-- Large histories (>10k sessions) may be slow
-- **Tip**: Run with Bun for 6-57x faster performance vs Node.js
+- **Tip**: Run with Bun for best performance
 
 ## Project Structure
 
@@ -397,14 +398,14 @@ Contributions welcome! Please:
 
 ## License
 
-MIT © heyhuynhgiabuu
+MIT © mmilidoni
 
 ## Links
 
-- [GitHub Repository](https://github.com/heyhuynhgiabuu/ocsight)
-- [NPM Package](https://www.npmjs.com/package/ocsight)
+- [GitHub Repository](https://github.com/mmilidoni/ocsight)
+- [NPM Package](https://www.npmjs.com/package/@mmilidoni/ocsight-cli)
 - [Documentation](https://ocsight.com)
-- [Issue Tracker](https://github.com/heyhuynhgiabuu/ocsight/issues)
+- [Issue Tracker](https://github.com/mmilidoni/ocsight/issues)
 
 ---
 

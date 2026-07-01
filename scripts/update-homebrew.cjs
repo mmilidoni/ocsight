@@ -23,7 +23,7 @@ async function updateHomebrew(version) {
   const checksums = {};
 
   for (const { os, arch } of platforms) {
-    const url = `https://github.com/heyhuynhgiabuu/ocsight/releases/download/v${version}/ocsight-${os}-${arch}.zip`;
+    const url = `https://github.com/mmilidoni/ocsight/releases/download/v${version}/ocsight-${os}-${arch}.zip`;
     console.log(`Calculating checksum for ${os}-${arch}...`);
 
     try {
@@ -52,20 +52,20 @@ async function updateHomebrew(version) {
   let updatedFormula = formula
     .replace(/version "[^"]+"/g, `version "${version}"`)
     .replace(
-      /url "https:\/\/github\.com\/heyhuynhgiabuu\/ocsight\/releases\/download\/v[^\/]+\/ocsight-darwin-arm64\.zip"/g,
-      `url "https://github.com/heyhuynhgiabuu/ocsight/releases/download/v${version}/ocsight-darwin-arm64.zip"`,
+      /url "https:\/\/github\.com\/mmilidoni\/ocsight\/releases\/download\/v[^\/]+\/ocsight-darwin-arm64\.zip"/g,
+      `url "https://github.com/mmilidoni/ocsight/releases/download/v${version}/ocsight-darwin-arm64.zip"`,
     )
     .replace(
-      /url "https:\/\/github\.com\/heyhuynhgiabuu\/ocsight\/releases\/download\/v[^\/]+\/ocsight-darwin-x64\.zip"/g,
-      `url "https://github.com/heyhuynhgiabuu/ocsight/releases/download/v${version}/ocsight-darwin-x64.zip"`,
+      /url "https:\/\/github\.com\/mmilidoni\/ocsight\/releases\/download\/v[^\/]+\/ocsight-darwin-x64\.zip"/g,
+      `url "https://github.com/mmilidoni/ocsight/releases/download/v${version}/ocsight-darwin-x64.zip"`,
     )
     .replace(
-      /url "https:\/\/github\.com\/heyhuynhgiabuu\/ocsight\/releases\/download\/v[^\/]+\/ocsight-linux-arm64\.zip"/g,
-      `url "https://github.com/heyhuynhgiabuu/ocsight/releases/download/v${version}/ocsight-linux-arm64.zip"`,
+      /url "https:\/\/github\.com\/mmilidoni\/ocsight\/releases\/download\/v[^\/]+\/ocsight-linux-arm64\.zip"/g,
+      `url "https://github.com/mmilidoni/ocsight/releases/download/v${version}/ocsight-linux-arm64.zip"`,
     )
     .replace(
-      /url "https:\/\/github\.com\/heyhuynhgiabuu\/ocsight\/releases\/download\/v[^\/]+\/ocsight-linux-x64\.zip"/g,
-      `url "https://github.com/heyhuynhgiabuu/ocsight/releases/download/v${version}/ocsight-linux-x64.zip"`,
+      /url "https:\/\/github\.com\/mmilidoni\/ocsight\/releases\/download\/v[^\/]+\/ocsight-linux-x64\.zip"/g,
+      `url "https://github.com/mmilidoni/ocsight/releases/download/v${version}/ocsight-linux-x64.zip"`,
     );
 
   // Update SHA256 checksums

@@ -1,384 +1,69 @@
-## IMPORTANT
+# ocsight
 
-- Try to keep things in one function unless composable or reusable
-- DO NOT do unnecessary destructuring of variables
-- DO NOT use `else` statements unless necessary
-- DO NOT use `try`/`catch` if it can be avoided
-- AVOID `try`/`catch` where possible
-- AVOID `else` statements
-- AVOID using `any` type
-- AVOID `let` statements
-- PREFER single word variable names where possible
-- Use as many bun apis as possible like Bun.file()
+OpenCode cost/usage observability CLI + docs website. Bun monorepo, turbo-orchestrated.
 
-## PROJECT RULE
+## Layout
 
-Tools must be designed for agents, not humans. Build few high-impact tools that match natural workflows, return only high-signal context, and optimize for token efficiency. More tools ≠ better outcomes.
+- `packages/cli/` — the product. TypeScript CLI built with Commander. Source of truth.
+  - `src/index.ts` — entry, registers commands, gates `parse()` on `NODE_ENV !== "test"`.
+  - `src/commands/` — one file per subcommand (`summary`, `sessions`, `costs`, `export`, `config`, `live`, `models`, `budget`).
+  - `src/lib/` — helpers + `constants.ts` + `pricing.json` (model cost data) + `runtime-compat.ts` (Bun/Node shim, must stay first import in `index.ts`).
+  - `src/services/` — data/cost/format services.
+  - `test/` — bun tests, mix of `.test.ts` and `.test.js`. Some import from `../dist/index.js`, so a build must run first.
+- `packages/web/` — Astro + Starlight docs site. Has its own `AGENTS.md` with web-specific rules. Deploys to Cloudflare Pages (project `ocsight-website`, see `packages/web/wrangler.toml`).
+- `packages/distribution/go/` — tiny Go launcher; wraps the Node CLI behind a single binary. Built by `build.sh` per OS/arch.
+- `packages/distribution/homebrew/` — Homebrew formula source (`homebrew-tap-files/Formula/ocsight.rb`); written by `scripts/publish.ts` during release.
+- `scripts/` — `bundle-cli.ts` (real bundler), `publish.ts` (release), `bump-version.cjs` (manual npm publish), `update-homebrew.cjs`.
+- `index.js` (root) is a 5-line shim: `require("./lib/bundle.cjs")`. The real CLI is the bundled CJS in `lib/`.
+- `ocsight.config.json` (root) is a **sample/template** with hard-coded personal paths — ignore its `paths` block; do not treat as defaults.
 
-## DEVELOPMENT ENVIRONMENT
+## Build & test
 
-- Use **Bun** as the primary package manager and runtime for development (not npm)
-- All scripts and development workflows are optimized for Bun's performance
-
-## BUN.JS BEST PRACTICES & OPTIMIZATION
-
-### Core Runtime Usage
-
-**File Operations**
-
-- Use `Bun.file()` for reading files instead of `fs.readFile()`
-- Use `Bun.write()` for writing files instead of `fs.writeFile()`
-- Leverage `Bun.file().text()`, `.json()`, `.arrayBuffer()`, `.stream()` for different data formats
-- Use `Bun.stdin`, `Bun.stdout`, `Bun.stderr` for stream operations
-
-**HTTP & Networking**
-
-- Use `Bun.serve()` for high-performance HTTP servers instead of Express/Fastify
-- Leverage native `fetch()` for HTTP requests
-- Use `Bun.spawn()` for child processes instead of `child_process.spawn()`
-- Utilize WebSocket support via `new WebSocket()` and `Bun.serve()` websocket handlers
-
-**TypeScript & JSX**
-
-- Execute TypeScript files directly with `bun run` - no transpilation needed
-- Use `bunfig.toml` for TypeScript configuration instead of separate `tsconfig.json` when possible
-- Leverage native JSX support without Babel
-
-### Performance Optimization
-
-**Async Operations**
-
-- Use `async/await` for all I/O operations - never block the event loop
-- Use `Promise.all()` for concurrent operations when possible
-- Use `Bun.sleep()` for non-blocking delays instead of `setTimeout()`
-- Avoid synchronous file operations - always use async variants
-
-**Memory Management**
-
-- Use `Bun.gc()` to manually trigger garbage collection when needed
-- Prefer streaming large files instead of loading entirely into memory
-- Use `Bun.file()` lazy loading - files aren't read until accessed
-- Monitor memory usage with `process.memoryUsage()`
-
-**Bundle & Build**
-
-- Use `bun build` for production bundling with `--minify` and `--target=bun`
-- Leverage tree shaking - import only what you need: `import debounce from "lodash/debounce"`
-- Use `--compile` to create single-file executables for deployment
-- Enable source maps in production with `--sourcemap`
-
-### Package Management
-
-**Dependencies**
-
-- Use `bun install` instead of `npm install` - 20x faster installation
-- Use `bun add` for adding dependencies, `bun remove` for removal
-- Leverage `bun.lockb` binary lockfile for faster dependency resolution
-- Use `bunx` for executing packages without installation
-
-**Scripts & Workflow**
-
-- Use `bun --hot` for development with hot reloading
-- Use `bun test` for Jest-compatible testing - 100x faster than Jest
-- Use `bun run` for package.json scripts
-- Enable watch mode with `--watch` flag
-
-### Database & Storage
-
-**SQLite Integration**
-
-- Use `bun:sqlite` for built-in SQLite database operations
-- Leverage in-memory databases with `new Database(':memory:')`
-- Use prepared statements for performance: `db.prepare('SELECT * FROM users WHERE id = ?')`
-- Close database connections: `db.close()`
-
-**Environment Configuration**
-
-- Use `.env` files - Bun loads them automatically into `process.env`
-- Access environment via `Bun.env` instead of `process.env` when possible
-- Use `bunfig.toml` for runtime configuration
-
-### Testing & Development
-
-**Testing**
-
-- Use `bun:test` for Jest-compatible testing without external dependencies
-- Use `test.concurrent()` for parallel test execution
-- Use `--watch` mode for test-driven development
-- Use `--coverage` for code coverage reporting
-
-**Development Tools**
-
-- Use `bun fmt` for code formatting
-- Use `bun lint` for linting (when available)
-- Use `--inspect` for debugging with VS Code or browser devtools
-- Leverage `import.meta` for module metadata: `import.meta.main`, `import.meta.path`
-
-### Error Handling & Debugging
-
-**Error Patterns**
-
-- Use structured error handling with meaningful error messages
-- Leverage Bun's improved stack traces for debugging
-- Use `console.time()` and `console.timeEnd()` for performance profiling
-- Use `Bun.peek()` for inspecting objects without triggering getters
-
-**Production Deployment**
-
-- Use `bun build --compile` for creating standalone executables
-- Set `NODE_ENV=production` for production optimizations
-- Use `--smol` flag to reduce memory usage in production
-- Monitor performance with built-in metrics
-
-### Configuration Files
-
-**bunfig.toml Setup**
-
-```toml
-[install]
-# Use isolated installs for better dependency management
-linker = "isolated"
-# Enable auto-install for missing dependencies
-auto = "auto"
-
-[test]
-# Enable coverage reporting
-coverage = true
-# Set coverage threshold
-coverageThreshold = 0.8
-
-[run]
-# Use Bun shell for cross-platform compatibility
-shell = "bun"
-# Auto-alias node to bun for compatibility
-bun = true
+```bash
+bun install                  # one-time
+bun run build                # turbo → tsc on packages/cli → packages/cli/dist/
+bun run bundle-cli           # scripts/bundle-cli.ts → packages/cli/dist/index.cjs + lib/bundle.cjs
+bun run packages/cli/src/index.ts summary   # run unbundled dev CLI
+bun test --concurrent --coverage            # from packages/cli; root `bun test` works too
 ```
 
-### Migration from Node.js
-
-**API Replacements**
-
-- Replace `fs.readFile()` with `Bun.file().text()`
-- Replace `require()` with ES6 `import` statements
-- Replace `process.env` with `Bun.env` where possible
-- Replace `child_process.spawn()` with `Bun.spawn()`
-- Replace `http.createServer()` with `Bun.serve()`
-
-**Compatibility Notes**
-
-- Most Node.js APIs work natively in Bun
-- Test native modules compatibility before migration
-- Use `node:` prefix for Node.js-specific modules when needed
-- Some npm packages may need polyfills - test thoroughly
-
-### Security Best Practices
-
-**Input Validation**
-
-- Use Bun's built-in security features
-- Validate all inputs before processing
-- Use parameterized queries for database operations
-- Leverage `Bun.password()` for secure password hashing
-
-**Performance Monitoring**
-
-- Use `performance.now()` for precise timing
-- Monitor memory usage with `process.memoryUsage()`
-- Use `Bun.nanoseconds()` for high-resolution timing
-- Profile applications with built-in debugging tools
-
-## OPENCODE INTEGRATION
-
-Plugins hook into OpenCode events using TypeScript modules in `.opencode/plugin` directory. Export async functions that receive context ({ project, client, $, directory, worktree }) and return hooks for events like "session.created", "tool.execute.after", etc.
-
-## TOOL DESIGN PRINCIPLES
-
-- Build evaluation-driven: test tools with real agent tasks before shipping
-- Clear tool descriptions: write for a new hire, not an expert
-- High-signal responses: return only what agents need, not everything
-- Token efficiency: use pagination, filtering, truncation with defaults
-- Error guidance: errors must tell agents how to fix, not just fail
-- Natural workflows: tools should match how humans solve problems
-- Response formats: use enums for concise/detailed output options
-- Namespacing: group related tools with clear prefixes
-
-## PLUGIN BEST PRACTICES
-
-- Type safety: use TypeScript types from @opencode-ai/plugin
-- Context awareness: leverage project, client, $ shell, directory, worktree
-- Event-driven: hook into lifecycle events, don't poll
-- Error handling: throw meaningful errors that guide agents
-- Minimal state: avoid complex state management in plugins
-- Performance: tools should be fast, agents are impatient
-
-## UI DESIGN RULE
-
-- Clean, minimal brutalist design inspired by opencode.ai and shadcn/ui
-- Simple color schemes with lots of white space and clear typography
-- Focus on functionality over decoration - no unnecessary visual elements
-- Geometric simplicity with structured layouts and content-first approach
-- High-signal, low-noise interfaces that prioritize clarity and usability
-
-## BUN.SHELL & AUTOMATION
-
-### Shell Scripting with Bun
-
-**Cross-Platform Shell**
-
-- Use `$` template literal tag for shell commands: `await $`echo "Hello"``
-- Leverage built-in commands: `ls`, `cd`, `rm`, `mkdir`, `cat`, `touch`
-- Use redirection operators: `>`, `>>`, `<`, `2>`, `&>`
-- Chain commands with pipes: `await $`cat file.txt | grep "pattern" | wc -l``
-
-**Process Management**
-
-- Use `Bun.spawn()` for advanced process control
-- Leverage `Bun.spawnSync()` for synchronous operations
-- Use `$.nothrow()` to prevent non-zero exit codes from throwing
-- Access stdout/stderr: `const { stdout, stderr } = await $`command`.quiet()`
-
-**Environment & Working Directory**
-
-- Set environment variables: `await $`FOO=bar bun -e 'console.log(process.env.FOO)'``
-- Change working directory: `await $`pwd`.cwd("/tmp")`
-- Use string interpolation safely: `await $`echo ${userInput}`` (auto-escaped)
-
-### Advanced Bun Features
-
-**Binary Data Handling**
-
-- Use `Bun.file()` for efficient binary file operations
-- Convert between formats: `buffer.toArrayBuffer()`, `blob.stream()`
-- Use `Uint8Array` for binary manipulation
-- Leverage `Bun.gzipSync()` and `Bun.gunzipSync()` for compression
-
-**Web Standards**
-
-- Use native `fetch()`, `Response()`, `Request()` objects
-- Leverage `Headers`, `URL`, `URLSearchParams` APIs
-- Use `FormData` for multipart form data
-- Implement WebSocket servers with `Bun.serve()` websocket handlers
-
-**Utilities & Helpers**
-
-- Use `Bun.deepEquals()` for object comparison
-- Use `Bun.randomUUIDv7()` for UUID generation
-- Use `Bun.which()` to find executable paths
-- Use `Bun.escapeHTML()` for HTML escaping
-
-## PRODUCTION DEPLOYMENT
-
-### Docker Optimization
-
-**Multi-stage Builds**
-
-```dockerfile
-# Build stage
-FROM oven/bun:1-alpine AS builder
-WORKDIR /app
-COPY package.json bun.lockb ./
-RUN bun install --frozen-lockfile
-COPY . .
-RUN bun run build
-
-# Production stage
-FROM oven/bun:1-alpine AS runtime
-WORKDIR /app
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/package.json ./
-EXPOSE 3000
-CMD ["bun", "run", "start"]
-```
-
-**Performance Tuning**
-
-- Use `--smol` flag for reduced memory usage
-- Enable production mode: `NODE_ENV=production`
-- Use worker threads for CPU-intensive tasks
-- Implement proper error handling and logging
-
-### Monitoring & Observability
-
-**Performance Metrics**
-
-- Monitor startup time with `console.time()`
-- Track memory usage: `process.memoryUsage()`
-- Use `performance.now()` for precise timing
-- Implement health checks with `Bun.serve()`
-
-**Error Handling**
-
-- Use structured error logging
-- Implement graceful shutdown with `process.on('SIGTERM')`
-- Use try/catch for async operations where necessary
-- Monitor unhandled promise rejections
-
-## MIGRATION CHECKLIST
-
-### From Node.js to Bun
-
-**Pre-Migration**
-
-- [ ] Test all npm packages for Bun compatibility
-- [ ] Identify native modules that may need replacement
-- [ ] Review build scripts and CI/CD pipelines
-- [ ] Backup existing Node.js configuration
-
-**Migration Steps**
-
-- [ ] Replace `npm install` with `bun install`
-- [ ] Update package.json scripts to use `bun`
-- [ ] Replace Node.js APIs with Bun equivalents
-- [ ] Update Dockerfile to use `oven/bun` base image
-- [ ] Test all functionality thoroughly
-- [ ] Update CI/CD pipelines for Bun
-
-**Post-Migration**
-
-- [ ] Monitor performance improvements
-- [ ] Update documentation
-- [ ] Train team on Bun-specific features
-- [ ] Implement Bun-specific optimizations
-
-### Compatibility Matrix
-
-**Fully Supported**
-
-- ✅ ES Modules and CommonJS
-- ✅ TypeScript and JSX
-- ✅ Most npm packages
-- ✅ Node.js core APIs (fs, path, crypto, etc.)
-- ✅ Web APIs (fetch, Response, Request)
-
-**Partial Support**
-
-- 🟡 Some native modules
-- 🟡 Advanced Node.js features
-- 🟡 Specific npm packages with native addons
-
-**Not Supported**
-
-- ❌ V8-specific APIs
-- ❌ Some Node.js internals
-- ❌ Certain native addons
-
-## RESOURCES & REFERENCE
-
-### Official Documentation
-
-- [Bun Documentation](https://bun.com/docs)
-- [API Reference](https://bun.com/reference)
-- [GitHub Repository](https://github.com/oven-sh/bun)
-
-### Performance Benchmarks
-
-- HTTP servers: 3x faster than Node.js
-- Package installation: 20x faster than npm
-- Test runner: 100x faster than Jest
-- Startup time: 4x faster than Node.js
-
-### Community & Support
-
-- Discord: [bun.sh/discord](https://bun.sh/discord)
-- GitHub Issues: [github.com/oven-sh/bun/issues](https://github.com/oven-sh/bun/issues)
-- Twitter: [@bunjavascript](https://twitter.com/bunjavascript)
+Order matters: `test` (turbo task) `dependsOn: ["build"]`. Tests that import from `dist/` will fail without a build first. The bundler (`bundle-cli`) is separate from `build` — both must run for `node index.js` to work.
+
+To smoke-test the bundled binary: `chmod +x index.js && node index.js --version`.
+
+## Repo gotchas
+
+- **Two bundlers in the tree, only one is real.** `scripts/bundle-cli.ts` (Bun.build → CJS with `__PACKAGE_VERSION__` injected via `define`) is the active one. `esbuild.config.cjs` is orphaned — it points at `src/index.ts` which doesn't exist. Don't try to "fix" it; it's dead.
+- **Runtime polyfill is load-bearing.** `import "./lib/runtime-compat.js"` must be the first executable line in `packages/cli/src/index.ts`. It provides Bun-API fallbacks (zstd, ANSI strip, `Bun.file`, keychain) so the bundle runs under both Bun and Node 18/20. Removing or reordering it breaks Node builds.
+- **Version injection.** `__PACKAGE_VERSION__` is set at bundle time from root `package.json`. Unbundled/dev runs fall back to `"0.7.4"` — don't rely on that value.
+- **Test guard.** `index.ts` only calls `program.parse()` when `NODE_ENV !== "test"`. Don't remove this; the test suite imports `initializeProgram` directly and re-parses itself.
+- **Bun config split.** Root `bunfig.toml` has `coverageThreshold = 0` (disabled). `packages/cli/bunfig.toml` sets it to `0.8` (enforced) — the package-level config wins inside `packages/cli/`.
+- **Lockfile.** `bun.lock` is the text format; ignore the older `bun.lockb` references.
+- **Two release paths.**
+  - Manual dispatch via `release.yml` → `./build.sh` → `scripts/publish.ts` → npm + zips in `dist/`.
+  - Tag push `v*` via `build-executables.yml` → standalone Bun-compiled binaries (`bun build --compile`) → GitHub release with 5 platform artifacts. macOS builds sign with `MACOS_CERTIFICATE`/`MACOS_CERTIFICATE_PWD` secrets if present.
+  - Don't mix them. `build.sh` produces Node-wrapped zips; the tag workflow produces self-contained binaries.
+- **Deploys.** `deploy-cloudflare.yml` builds `packages/web` and ships via wrangler (needs `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`). `deploy-dev.yml` runs on `develop` and includes a `semantic-release --dry-run`.
+- **Bot trigger.** `.github/workflows/opencode.yml` runs `sst/opencode/github` on issue/PR comments containing `/oc` or `/opencode` (model `opencode/grok-code`, needs `xai_api_key` secret).
+- **No Docker, no `.opencode/` plugin dir in this repo.** Skip those parts of generic Bun/OpenCode advice.
+- **Pricing data** lives at `packages/cli/src/lib/pricing.json`. Cost engine is `lib/cost.ts`. Don't hardcode model prices elsewhere.
+- **Add deps to the right package.** Root `devDependencies` are build tooling only (turbo, esbuild, typescript, bun-types, @types/node). Runtime deps go in `packages/cli/package.json` or `packages/web/package.json`.
+
+## Conventions (project rule)
+
+- Tools are designed for **agents, not humans**: few high-impact commands, high-signal output, token-efficient defaults. More tools ≠ better.
+- CLI style: short single-word variable names where possible, no unnecessary destructuring, no `else` unless needed, no `try`/`catch` unless a boundary requires it, no `any`, prefer `const` over `let`, one function unless composable/reusable.
+- UI: clean brutalist — opencode.ai / shadcn influence, geometric simplicity, no decoration. CLI tables use `cli-table3`; colors via `chalk`; avoid gratuitous styling.
+- Use Bun APIs (`Bun.file`, `Bun.write`, `Bun.spawn`, `Bun.build`, `bun:test`) when available; the runtime-compat layer covers Node fallbacks.
+
+## Sub-AGENTS
+
+- `packages/web/AGENTS.md` — Astro/Starlight-specific rules (content collections, frontmatter, MDX vs Markdoc, sidebar). Read it before touching the website.
+
+## Things to not do
+
+- Don't commit secrets. The Homebrew `MACOS_CERTIFICATE` etc. live in GitHub secrets only.
+- Don't bump versions by hand — `scripts/publish.ts` rewrites `package.json` during release.
+- Don't delete `dist/`, `lib/bundle.cjs`, or `.turbo/` casually — they're gitignored build outputs but breaking the bundle breaks `index.js`.
+- Don't change `runtime-compat.ts` import order or remove the `NODE_ENV !== "test"` guard.
+- Don't read defaults from root `ocsight.config.json` `paths` — those are sample values, not real config.

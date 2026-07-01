@@ -1,5 +1,5 @@
 {
-  "name": "@heyhuynhgiabuu/ocsight-cli",
+  "name": "@mmilidoni/ocsight-cli",
   "version": "1.2.2",
   "description": "OpenCode ecosystem observability CLI",
   "type": "module",
@@ -30,12 +30,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/heyhuynhgiabuu/ocsight.git"
+    "url": "https://github.com/mmilidoni/ocsight.git"
   },
   "bugs": {
-    "url": "https://github.com/heyhuynhgiabuu/ocsight/issues"
+    "url": "https://github.com/mmilidoni/ocsight/issues"
   },
-  "homepage": "https://github.com/heyhuynhgiabuu/ocsight#readme",
+  "homepage": "https://github.com/mmilidoni/ocsight#readme",
   "dependencies": {
     "chalk": "^5.6.2",
     "cli-table3": "^0.6.5",

@@ -1,8 +1,6 @@
-import { readdir, mkdir, stat } from "fs/promises";
+import { readdir, stat } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
-import { createHash } from "crypto";
-import { ProgressManager } from "./progress.js";
 import {
   OpenCodeData,
   OpenCodeSession,
@@ -10,10 +8,10 @@ import {
   ToolUsage,
 } from "../types/index.js";
 import { runtime } from "./runtime-compat.js";
+import { openDb, closeDb, queryAll } from "./database.js";
 
 export function getDefaultOpenCodePath(): string {
   const platform = process.platform;
-
   if (platform === "win32") {
     return join(
       process.env.USERPROFILE || homedir(),
@@ -22,8 +20,6 @@ export function getDefaultOpenCodePath(): string {
       "opencode",
     );
   }
-
-  // macOS and Linux
   return join(homedir(), ".local", "share", "opencode");
 }
 
@@ -31,9 +27,9 @@ export async function findOpenCodeDataDirectory(
   customPath?: string,
 ): Promise<string> {
   const basePath = customPath || getDefaultOpenCodePath();
-
   try {
     await stat(basePath).catch(async () => {
+      const { mkdir } = await import("fs/promises");
       await mkdir(basePath, { recursive: true });
     });
     return basePath;
@@ -41,6 +37,19 @@ export async function findOpenCodeDataDirectory(
     throw new Error(`OpenCode data directory not found: ${basePath}`);
   }
 }
+
+async function dbPathExists(dataDir: string): Promise<boolean> {
+  try {
+    await stat(join(dataDir, "opencode.db"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// File-based fallback types (kept for backward compat)
+// ---------------------------------------------------------------------------
 
 interface SessionMetadata {
   id: string;
@@ -57,9 +66,7 @@ interface MessageData {
   id: string;
   role: "user" | "assistant";
   sessionID: string;
-  time: {
-    created: number;
-  };
+  time: { created: number };
   content?: any;
   tools?: any[];
   providerID?: string;
@@ -68,562 +75,254 @@ interface MessageData {
     input: number;
     output: number;
     reasoning?: number;
-    cache?: {
-      write: number;
-      read: number;
-    };
+    cache?: { write: number; read: number };
   };
   cost?: number;
   system?: string[];
   mode?: string;
 }
 
-interface CacheEntry {
-  filePath: string;
-  mtime: number;
-  size: number;
-  hash: string;
-  processedAt: number;
-}
-
-interface CacheData {
-  version: string;
-  entries: CacheEntry[];
-  lastProcessed: number;
-}
-
-async function getCacheFilePath(dataDir: string): Promise<string> {
-  const cacheDir = join(dataDir, ".cache");
-  try {
-    await mkdir(cacheDir, { recursive: true });
-  } catch (error) {
-    // Directory might already exist, ignore
-  }
-  return join(cacheDir, "data-cache.json");
-}
-
-async function loadCache(dataDir: string): Promise<CacheData | null> {
-  try {
-    const cacheFilePath = await getCacheFilePath(dataDir);
-    const file = runtime.file(cacheFilePath);
-    if (!(await file.exists())) {
-      return null;
-    }
-    const content = await file.text();
-    const cache = JSON.parse(content) as CacheData;
-
-    const CACHE_VERSION = "3.0";
-
-    // Validate cache version
-    if (cache.version !== CACHE_VERSION) {
-      return null;
-    }
-
-    return cache;
-  } catch (error) {
-    return null;
-  }
-}
-
-async function saveCache(dataDir: string, cache: CacheData): Promise<void> {
-  try {
-    const cacheFilePath = await getCacheFilePath(dataDir);
-    await runtime.write(cacheFilePath, JSON.stringify(cache, null, 2));
-  } catch (error) {
-    console.warn("Failed to save cache:", error);
-  }
-}
-
-const HASH_LENGTH = 16;
-
-function calculateFileHash(content: string): string {
-  return createHash("sha256")
-    .update(content)
-    .digest("hex")
-    .substring(0, HASH_LENGTH);
-}
-
-async function getFileMetadata(
-  filePath: string,
-): Promise<{ mtime: number; size: number; hash: string }> {
-  const file = runtime.file(filePath);
-  const content = await file.text();
-  const stats = await file.stat();
-  return {
-    mtime: stats.mtimeMs,
-    size: stats.size,
-    hash: calculateFileHash(content),
-  };
-}
-
-async function hasFileChanged(
-  filePath: string,
-  cacheEntry: CacheEntry | undefined,
-): Promise<boolean> {
-  if (!cacheEntry) return true;
-
-  const metadata = await getFileMetadata(filePath);
-  return (
-    metadata.mtime !== cacheEntry.mtime ||
-    metadata.size !== cacheEntry.size ||
-    metadata.hash !== cacheEntry.hash
-  );
-}
-
-// Optimized version that returns both change status and content
-async function analyzeFile(
-  filePath: string,
-  cacheEntry: CacheEntry | undefined,
-): Promise<{
-  changed: boolean;
-  metadata: { mtime: number; size: number; hash: string };
-  content: string;
-}> {
-  const file = runtime.file(filePath);
-  const content = await file.text();
-  const stats = await file.stat();
-  const hash = calculateFileHash(content);
-
-  const metadata = {
-    mtime: stats.mtimeMs,
-    size: stats.size,
-    hash: hash,
-  };
-
-  const changed =
-    !cacheEntry ||
-    metadata.mtime !== cacheEntry.mtime ||
-    metadata.size !== cacheEntry.size ||
-    metadata.hash !== cacheEntry.hash;
-
-  return { changed, metadata, content };
-}
-
-interface SessionStreamData {
-  id: string;
-  title: string;
-  time: {
-    created: number;
-    updated?: number;
-  };
-  tokens_used: number;
-  cost_cents: number;
-  model: {
-    provider: string;
-    model: string;
-  };
-  messages: OpenCodeMessage[];
-}
+// ---------------------------------------------------------------------------
+// Tool extraction helpers
+// ---------------------------------------------------------------------------
 
 function extractToolName(command: string): string | null {
-  // Remove common prefixes and extract the main command
   const cleanCommand = command
-    .replace(/^(sudo|doas)\s+/, "") // Remove sudo prefixes
-    .replace(/^['"`]/, "") // Remove opening quotes
-    .replace(/['"`]\s*$/, "") // Remove closing quotes
+    .replace(/^(sudo|doas)\s+/, "")
+    .replace(/^['"`]/, "")
+    .replace(/['"`]\s*$/, "")
     .trim();
-
-  // Split by space or pipe and get the first part
   const firstPart = cleanCommand.split(/[\s|]/)[0];
-
-  // Extract the base command from paths (e.g., /usr/bin/git -> git)
   const baseCommand = firstPart.split("/").pop() || firstPart;
-
-  // Validate it's a reasonable tool name
   if (baseCommand && /^[a-zA-Z][a-zA-Z0-9_-]*$/.test(baseCommand)) {
     return baseCommand.toLowerCase();
   }
-
   return null;
 }
 
-class DataProcessingError extends Error {
-  constructor(
-    message: string,
-    public readonly filePath?: string,
-    public readonly operation?: string,
-    public readonly recoverable: boolean = true,
-  ) {
-    super(message);
-    this.name = "DataProcessingError";
-  }
-}
+function extractToolsFromMessage(msg: MessageData): ToolUsage[] {
+  const tools: ToolUsage[] = [];
+  const content = typeof msg.content === "string" ? msg.content : "";
+  const timestamp = new Date(msg.time?.created || Date.now()).toISOString();
 
-function handleError(
-  error: unknown,
-  context: string,
-  filePath?: string,
-): never | void {
-  if (error instanceof DataProcessingError) {
-    if (error.recoverable) {
-      console.warn(
-        `Recoverable error in ${context}: ${error.message}`,
-        filePath ? `File: ${filePath}` : "",
-      );
-      return;
+  if (content) {
+    const codeBlockMatches = content.match(
+      /```(?:bash|tool|sh|shell|command)\s*\n([\s\S]*?)\n```/g,
+    );
+    if (codeBlockMatches) {
+      codeBlockMatches.forEach((match) => {
+        const toolCommand = match
+          .replace(/```(?:bash|tool|sh|shell|command)\s*\n([\s\S]*?)\n```/, "$1")
+          .trim();
+        if (toolCommand) {
+          tools.push({
+            name: extractToolName(toolCommand) || "unknown",
+            duration_ms: 0,
+            timestamp,
+          });
+        }
+      });
     }
-    throw error;
+
+    const directToolMentions = content.match(
+      /\b(?:bash|read|write|glob|grep|edit|list|task|chrome|figma|serena|vibe|context7|webfetch|sequential-thinking)\b/gi,
+    );
+    if (directToolMentions) {
+      [...new Set(directToolMentions.map((t) => t.toLowerCase()))].forEach((name) => {
+        tools.push({ name, duration_ms: 0, timestamp });
+      });
+    }
   }
 
-  if (error instanceof Error) {
-    console.error(
-      `Unexpected error in ${context}: ${error.message}`,
-      error.stack,
-      filePath ? `File: ${filePath}` : "",
-    );
-    throw new DataProcessingError(
-      `Unexpected error: ${error.message}`,
-      filePath,
-      context,
-      false,
-    );
-  }
-
-  console.error(`Unknown error in ${context}:`, error);
-  throw new DataProcessingError(
-    "Unknown error occurred",
-    filePath,
-    context,
-    false,
-  );
+  return tools;
 }
 
-async function safeFileOperation<T>(
-  operation: () => Promise<T>,
-  filePath: string,
-  operationName: string,
-  defaultValue?: T,
-): Promise<T | undefined> {
+// ---------------------------------------------------------------------------
+// Database loading path
+// ---------------------------------------------------------------------------
+
+async function loadFromDatabase(
+  dataDir: string,
+  options?: { limit?: number; days?: number; quiet?: boolean },
+): Promise<OpenCodeData> {
+  const db = await openDb(join(dataDir, "opencode.db"), { readonly: true });
+
   try {
-    return await operation();
-  } catch (error) {
-    handleError(error, operationName, filePath);
-    return defaultValue;
-  }
-}
+    let sql = `SELECT id, title, time_created, time_updated, version, parent_id,
+                     cost, tokens_input, tokens_output, tokens_reasoning,
+                     tokens_cache_read, tokens_cache_write, model, agent
+              FROM session`;
+    const params: number[] = [];
 
-function validateMessageData(data: any): data is MessageData {
-  return (
-    data &&
-    typeof data.id === "string" &&
-    typeof data.role === "string" &&
-    typeof data.sessionID === "string" &&
-    data.time &&
-    typeof data.time.created === "number"
-  );
-}
-
-function validateSessionData(data: any): data is SessionMetadata {
-  return (
-    data &&
-    typeof data.id === "string" &&
-    data.time &&
-    typeof data.time.created === "number"
-  );
-}
-
-async function* streamProcessSessions(
-  sessionMap: Map<string, SessionMetadata>,
-  messagesBySession: Map<string, MessageData[]>,
-): AsyncGenerator<SessionStreamData, void, unknown> {
-  for (const [sessionId, sessionMeta] of sessionMap) {
-    const messages = messagesBySession.get(sessionId) || [];
-
-    // Extract provider/model info and calculate totals from assistant messages
-    let totalTokens = 0;
-    let totalCost = 0;
-    let provider = "unknown";
-    let model = "unknown";
-    let latestAssistantTime = 0;
-
-    for (const msg of messages) {
-      if (msg.role === "assistant" && msg.providerID && msg.modelID) {
-        // Use the most recent assistant message's model info
-        const msgTime = msg.time?.created || 0;
-        if (msgTime > latestAssistantTime) {
-          latestAssistantTime = msgTime;
-          provider = msg.providerID;
-          model = msg.modelID;
-        }
-
-        if (msg.tokens) {
-          totalTokens += (msg.tokens.input || 0) + (msg.tokens.output || 0);
-          if (msg.tokens.cache) {
-            totalTokens +=
-              (msg.tokens.cache.read || 0) + (msg.tokens.cache.write || 0);
-          }
-        }
-
-        if (typeof msg.cost === "number") {
-          totalCost += msg.cost;
-        }
-      }
+    if (options?.days) {
+      const cutoff = Date.now() - options.days * 86400000;
+      sql += ` WHERE time_updated > ?`;
+      params.push(cutoff);
     }
 
-    // Extract tools from message content or system prompts with enhanced pattern matching
-    const processedMessages = messages.map((msg) => {
-      const tools: ToolUsage[] = [];
+    sql += ` ORDER BY time_updated DESC`;
 
-      // Enhanced tool extraction from content
-      if (typeof msg.content === "string") {
-        // Pattern 1: Code blocks with bash/tool markers
-        const codeBlockMatches = msg.content.match(
-          /```(?:bash|tool|sh|shell|command)\s*\n([\s\S]*?)\n```/g,
-        );
-        if (codeBlockMatches) {
-          codeBlockMatches.forEach((match) => {
-            const toolCommand = match
-              .replace(
-                /```(?:bash|tool|sh|shell|command)\s*\n([\s\S]*?)\n```/,
-                "$1",
-              )
-              .trim();
-            if (toolCommand) {
-              tools.push({
-                name: extractToolName(toolCommand) || "unknown",
-                duration_ms: 0,
-                timestamp: new Date(msg.time.created).toISOString(),
-              });
-            }
-          });
-        }
+    if (options?.limit && options.limit < Infinity) {
+      sql += ` LIMIT ?`;
+      params.push(options.limit);
+    }
 
-        // Pattern 2: Direct tool calls in text (e.g., "I'll use the read tool to...")
-        const directToolMentions = msg.content.match(
-          /\b(?:bash|read|write|glob|grep|edit|list|task|chrome|figma|serena|vibe|context7|webfetch|sequential-thinking)\b/gi,
-        );
-        if (directToolMentions) {
-          const uniqueTools = [
-            ...new Set(directToolMentions.map((t) => t.toLowerCase())),
-          ];
-          uniqueTools.forEach((toolName) => {
-            tools.push({
-              name: toolName,
-              duration_ms: 0,
-              timestamp: new Date(msg.time.created).toISOString(),
-            });
-          });
-        }
+    const sessionRows = queryAll(db, sql, ...params);
 
-        // Pattern 3: Tool execution patterns (e.g., "Executing: bash command")
-        const executionPatterns = msg.content.match(
-          /(?:executing|running|using|called)\s*[:\-]?\s*([a-zA-Z][a-zA-Z0-9_-]*)/gi,
-        );
-        if (executionPatterns) {
-          executionPatterns.forEach((match) => {
-            const toolName = match
-              .replace(/(?:executing|running|using|called)\s*[:\-]?\s*/i, "")
-              .trim();
-            if (toolName && toolName.length > 1) {
-              tools.push({
-                name: toolName.toLowerCase(),
-                duration_ms: 0,
-                timestamp: new Date(msg.time.created).toISOString(),
-              });
-            }
-          });
+    if (!options?.quiet) {
+      console.log(`Found ${sessionRows.length} sessions in database`);
+    }
+
+    const sessions: OpenCodeSession[] = [];
+
+    for (const row of sessionRows) {
+      // Parse model JSON
+      let provider = "unknown";
+      let model = "unknown";
+      if (row.model) {
+        try {
+          const parsed = typeof row.model === "string" ? JSON.parse(row.model) : row.model;
+          provider = parsed.providerID || "unknown";
+          model = parsed.id || "unknown";
+        } catch {
+          // fall through with defaults
         }
       }
 
-      // Enhanced tool extraction from system prompts
-      if (msg.system && Array.isArray(msg.system)) {
-        const systemText = msg.system.join(" ");
+      // Pre-aggregated tokens from session table
+      const tokensUsed =
+        (row.tokens_input || 0) +
+        (row.tokens_output || 0) +
+        (row.tokens_reasoning || 0) +
+        (row.tokens_cache_read || 0) +
+        (row.tokens_cache_write || 0);
 
-        // Pattern 1: Function/tool definitions
-        const toolDefinitions = systemText.match(
-          /(?:function|tool|method)\s+[a-zA-Z][a-zA-Z0-9_-]*\s*\([^)]*\)/gi,
-        );
-        if (toolDefinitions) {
-          toolDefinitions.forEach((def) => {
-            const toolName = def.match(
-              /(?:function|tool|method)\s+([a-zA-Z][a-zA-Z0-9_-]*)/i,
-            )?.[1];
-            if (toolName) {
-              tools.push({
-                name: toolName.toLowerCase(),
-                duration_ms: 0,
-                timestamp: new Date(msg.time.created).toISOString(),
-              });
-            }
-          });
+      const costCents =
+        typeof row.cost === "number" && isFinite(row.cost) && !isNaN(row.cost)
+          ? Math.round(row.cost * 100)
+          : 0;
+
+      // Load messages for this session
+      const messageRows = queryAll(
+        db,
+        `SELECT id, session_id, time_created, time_updated, data
+         FROM message WHERE session_id = ? ORDER BY time_created`,
+        row.id,
+      );
+
+      const messages: OpenCodeMessage[] = messageRows.map((msgRow: any) => {
+        let msgData: any = {};
+        try {
+          msgData = typeof msgRow.data === "string" ? JSON.parse(msgRow.data) : msgRow.data;
+        } catch {
+          // empty message data
         }
 
-        // Pattern 2: Tool availability lists
-        const toolLists = systemText.match(
-          /(?:available|supported)\s+tools?\s*[:\-]?\s*([^.\n]+)/gi,
-        );
-        if (toolLists) {
-          toolLists.forEach((list) => {
-            const toolNames = list
-              .replace(/(?:available|supported)\s+tools?\s*[:\-]?\s*/i, "")
-              .split(/[,;]/)
-              .map((name) => name.trim().toLowerCase())
-              .filter((name) => name.length > 1);
-            toolNames.forEach((toolName) => {
-              tools.push({
-                name: toolName,
-                duration_ms: 0,
-                timestamp: new Date(msg.time.created).toISOString(),
-              });
-            });
-          });
-        }
+        const role: "user" | "assistant" =
+          msgData.role === "assistant" ? "assistant" : "user";
 
-        // Pattern 3: Direct tool patterns (existing logic enhanced)
-        const toolPatterns = systemText.match(
-          /(?:bash|read|write|glob|grep|edit|list|task|chrome|figma|serena|vibe|context7|webfetch|sequential-thinking)\s*\([^)]*\)/gi,
-        );
-        if (toolPatterns) {
-          toolPatterns.forEach((pattern) => {
-            const toolName =
-              pattern.match(
-                /(bash|read|write|glob|grep|edit|list|task|chrome|figma|serena|vibe|context7|webfetch|sequential-thinking)/i,
-              )?.[1] || "unknown";
-            tools.push({
-              name: toolName.toLowerCase(),
-              duration_ms: 0,
-              timestamp: new Date(msg.time.created).toISOString(),
-            });
-          });
-        }
-      }
+        return {
+          id: msgRow.id,
+          role,
+          content: msgData.content || msgData.summary
+            ? JSON.stringify(msgData.summary || "")
+            : "",
+          timestamp: new Date(msgRow.time_created).toISOString(),
+          tools: extractToolsFromMessage({
+            ...msgData,
+            time: { created: msgRow.time_created },
+          }),
+        } as OpenCodeMessage;
+      });
 
-      // Extract tools from tools array if available
-      if (msg.tools && Array.isArray(msg.tools)) {
-        msg.tools.forEach((tool) => {
-          if (typeof tool === "string") {
-            tools.push({
-              name: tool.toLowerCase(),
-              duration_ms: 0,
-              timestamp: new Date(msg.time.created).toISOString(),
-            });
-          } else if (tool && typeof tool === "object" && tool.name) {
-            tools.push({
-              name: tool.name.toLowerCase(),
-              duration_ms: tool.duration_ms || 0,
-              timestamp: new Date(msg.time.created).toISOString(),
-            });
-          }
-        });
-      }
+      sessions.push({
+        id: row.id,
+        title: row.title || "Untitled Session",
+        time: {
+          created: row.time_created,
+          updated: row.time_updated,
+        },
+        messages,
+        tokens_used: tokensUsed,
+        cost_cents: costCents,
+        model: { provider, model },
+      });
+    }
 
-      return {
-        id: msg.id,
-        role: msg.role,
-        content: msg.content || "",
-        timestamp: new Date(msg.time.created).toISOString(),
-        tools: tools,
-      } as OpenCodeMessage;
-    });
-
-    // Yield session data
-    yield {
-      id: sessionId,
-      title: sessionMeta.title || "Untitled Session",
-      time: {
-        created: sessionMeta.time.created,
-        updated: sessionMeta.time.updated,
-      },
-      messages: processedMessages,
-      tokens_used: totalTokens,
-      cost_cents:
-        isFinite(totalCost) && !isNaN(totalCost)
-          ? Math.round(totalCost * 100)
-          : 0,
-      model: {
-        provider: provider,
-        model: model,
-      },
-    };
+    return { sessions };
+  } finally {
+    closeDb(db);
   }
 }
 
-export async function findSessionFiles(dataDir: string): Promise<string[]> {
+// ---------------------------------------------------------------------------
+// File-based fallback loading path (no caching)
+// ---------------------------------------------------------------------------
+
+async function findSessionFiles(dataDir: string): Promise<string[]> {
   const files: string[] = [];
   const sessionDir = join(dataDir, "storage", "session");
-
   try {
-    // Check if directory exists by trying to read it
     await readdir(sessionDir);
-
-    async function searchSessionDirectory(dir: string) {
+    async function search(dir: string) {
       try {
         const entries = await readdir(dir);
-
         for (const entry of entries) {
           const fullPath = join(dir, entry);
-
-          // Check if it's a directory by trying to read it as a directory
           try {
             await readdir(fullPath);
-            await searchSessionDirectory(fullPath);
+            await search(fullPath);
           } catch {
-            // Not a directory, check if it's a session file
             if (entry.endsWith(".json") && entry.startsWith("ses_")) {
               files.push(fullPath);
             }
           }
         }
-      } catch (error) {
-        // Skip directories we can't read
+      } catch {
+        // skip unreadable
       }
     }
-
-    await searchSessionDirectory(sessionDir);
-  } catch (error) {
+    await search(sessionDir);
+  } catch {
     console.warn("Could not access session directory");
   }
-
   return files;
 }
 
-export async function findMessageFiles(dataDir: string): Promise<string[]> {
+async function findMessageFiles(dataDir: string): Promise<string[]> {
   const files: string[] = [];
   const messageDir = join(dataDir, "storage", "message");
-
   try {
-    // Check if directory exists by trying to read it
     await readdir(messageDir);
-
-    async function searchMessageDirectory(dir: string) {
+    async function search(dir: string) {
       try {
         const entries = await readdir(dir);
-
         for (const entry of entries) {
           const fullPath = join(dir, entry);
-
-          // Check if it's a directory by trying to read it as a directory
           try {
             await readdir(fullPath);
-            await searchMessageDirectory(fullPath);
+            await search(fullPath);
           } catch {
-            // Not a directory, check if it's a message file
             if (entry.endsWith(".json") && entry.startsWith("msg_")) {
               files.push(fullPath);
             }
           }
         }
-      } catch (error) {
-        // Skip directories we can't read
+      } catch {
+        // skip unreadable
       }
     }
-
-    await searchMessageDirectory(messageDir);
-  } catch (error) {
+    await search(messageDir);
+  } catch {
     console.warn("Could not access message directory");
   }
-
   return files;
 }
 
-export async function loadOpenCodeData(options?: {
-  limit?: number;
-  cache?: boolean;
-  days?: number;
-  quiet?: boolean;
-  verbose?: boolean;
-}): Promise<OpenCodeData> {
-  const dataDir = await findOpenCodeDataDirectory();
+async function loadFromFiles(
+  dataDir: string,
+  options?: { limit?: number; days?: number; quiet?: boolean; verbose?: boolean },
+): Promise<OpenCodeData> {
   const [sessionFiles, messageFiles] = await Promise.all([
     findSessionFiles(dataDir),
     findMessageFiles(dataDir),
@@ -635,52 +334,22 @@ export async function loadOpenCodeData(options?: {
     );
   }
 
-  // Initialize progress manager
-  const progressManager = new ProgressManager(
-    Math.max(sessionFiles.length, messageFiles.length),
-    { quiet: options?.quiet, verbose: options?.verbose },
-  );
-
-  // Load cache if enabled
-  const useCache = options?.cache !== false;
-  let cache: CacheData | null = null;
-  const cacheMap = new Map<string, CacheEntry>();
-
-  if (useCache) {
-    cache = await loadCache(dataDir);
-    if (cache) {
-      // Build cache map for quick lookup
-      cache.entries.forEach((entry) => {
-        cacheMap.set(entry.filePath, entry);
-      });
-      if (!options?.quiet) {
-        console.log(`Loaded cache with ${cache.entries.length} entries`);
-      }
-    }
-  }
-
-  // Apply performance limits and time-based filtering for quick mode
-  const messageLimit = options?.limit || Infinity;
+  // Time-based filtering
   let filteredMessageFiles = messageFiles;
-
-  // Time-based filtering for quick mode
   if (options?.days) {
-    const cutoffTime = Date.now() - options.days * 24 * 60 * 60 * 1000;
+    const cutoffTime = Date.now() - options.days * 86400000;
     if (!options?.quiet) {
       console.log(`Filtering to data from last ${options.days} days...`);
     }
-
-    // Filter message files by modification time
     const timeFilteredFiles: string[] = [];
     for (const file of messageFiles) {
       try {
-        const fileObj = runtime.file(file);
-        const stats = await fileObj.stat();
+        const stats = await runtime.file(file).stat();
         if (stats.mtimeMs >= cutoffTime) {
           timeFilteredFiles.push(file);
         }
-      } catch (error) {
-        // Skip files we can't stat
+      } catch {
+        // skip unstatable
       }
     }
     filteredMessageFiles = timeFilteredFiles;
@@ -689,136 +358,55 @@ export async function loadOpenCodeData(options?: {
     }
   }
 
+  const messageLimit = options?.limit || Infinity;
   const limitedMessageFiles = filteredMessageFiles.slice(0, messageLimit);
 
-  // Filter files that need processing (new or changed)
-  const filesToProcess: string[] = [];
-  const unchangedFiles: string[] = [];
-
-  if (useCache && cache) {
-    for (const file of limitedMessageFiles) {
-      const cacheEntry = cacheMap.get(file);
-      const hasChanged = await hasFileChanged(file, cacheEntry);
-
-      if (hasChanged) {
-        filesToProcess.push(file);
-      } else {
-        unchangedFiles.push(file);
-      }
-    }
-    if (!options?.quiet) {
-      console.log(
-        `Processing ${filesToProcess.length} new/changed files, ${unchangedFiles.length} cached files`,
-      );
-    }
-  } else {
-    filesToProcess.push(...limitedMessageFiles);
-    if (!options?.quiet) {
-      console.log(
-        `Processing ${filesToProcess.length} message files${options?.days ? ` (filtered to ${options.days} days)` : ""} (cache disabled or unavailable)`,
-      );
-    }
-  }
-
-  // Load session metadata with enhanced error handling and concurrency
+  // Load session metadata
   const sessionMap = new Map<string, SessionMetadata>();
-  let sessionLoadErrors = 0;
+  let sessionErrors = 0;
 
-  const sessionPromises = sessionFiles.map(async (file) => {
-    return await safeFileOperation(
-      async () => {
+  const sessionResults = await Promise.all(
+    sessionFiles.map(async (file) => {
+      try {
         const content = await runtime.file(file).text();
         const data = JSON.parse(content);
-
-        if (!validateSessionData(data)) {
-          throw new DataProcessingError(
-            "Invalid session data structure",
-            file,
-            "session validation",
-            true,
-          );
+        if (data && typeof data.id === "string" && data.time && typeof data.time.created === "number") {
+          return data as SessionMetadata;
         }
-
-        return data as SessionMetadata;
-      },
-      file,
-      "session loading",
-    );
-  });
-
-  const sessionResults = await Promise.all(sessionPromises);
+        sessionErrors++;
+        return null;
+      } catch {
+        sessionErrors++;
+        return null;
+      }
+    }),
+  );
 
   for (const session of sessionResults) {
-    if (session !== undefined && session !== null) {
+    if (session) {
       sessionMap.set(session.id, session);
-    } else {
-      sessionLoadErrors++;
     }
   }
 
-  if (sessionLoadErrors > 0 && !options?.quiet) {
-    console.warn(
-      `Failed to load ${sessionLoadErrors}/${sessionFiles.length} session files`,
-    );
-  }
-
-  const BATCH_SIZE = 100;
-  const PROGRESS_UPDATE_INTERVAL = 1000;
-
-  // Load messages and group by session with batching for better performance
+  // Load messages
   const messagesBySession = new Map<string, MessageData[]>();
-  const newCacheEntries: CacheEntry[] = [];
 
-  // Always load ALL message files so sessions retain their messages.
-  // Cache still only updated for changed files to avoid churn.
-  const allMessageFiles =
-    useCache && cache ? [...filesToProcess, ...unchangedFiles] : filesToProcess;
-
-  const changedSet = new Set(filesToProcess);
-
-  for (let i = 0; i < allMessageFiles.length; i += BATCH_SIZE) {
-    const batch = allMessageFiles.slice(i, i + BATCH_SIZE);
-
-    progressManager.updateProgress(i, "Processing message files");
-
-    const batchPromises = batch.map(async (file) => {
-      return await safeFileOperation(
-        async () => {
+  for (let i = 0; i < limitedMessageFiles.length; i += 100) {
+    const batch = limitedMessageFiles.slice(i, i + 100);
+    const batchResults = await Promise.all(
+      batch.map(async (file) => {
+        try {
           const content = await runtime.file(file).text();
           const data = JSON.parse(content);
-
-          if (!validateMessageData(data)) {
-            throw new DataProcessingError(
-              "Invalid message data structure",
-              file,
-              "message validation",
-              true,
-            );
+          if (data && typeof data.id === "string" && data.role && data.sessionID) {
+            return data as MessageData;
           }
-
-          const message = data as MessageData;
-
-          // Only update cache metadata for changed files
-          if (changedSet.has(file)) {
-            const metadata = await getFileMetadata(file);
-            const cacheEntry: CacheEntry = {
-              filePath: file,
-              mtime: metadata.mtime,
-              size: metadata.size,
-              hash: metadata.hash,
-              processedAt: Date.now(),
-            };
-            newCacheEntries.push(cacheEntry);
-          }
-
-          return message;
-        },
-        file,
-        "message loading",
-      );
-    });
-
-    const batchResults = await Promise.all(batchPromises);
+          return null;
+        } catch {
+          return null;
+        }
+      }),
+    );
 
     for (const message of batchResults) {
       if (message) {
@@ -829,75 +417,109 @@ export async function loadOpenCodeData(options?: {
       }
     }
 
-    // Progress indicator for large datasets
-    if (i % PROGRESS_UPDATE_INTERVAL === 0 && i > 0 && !options?.quiet) {
+    if (!options?.quiet && i > 0 && i % 1000 === 0) {
       console.log(
-        `Processed ${Math.min(i, allMessageFiles.length)}/${allMessageFiles.length} message files...`,
+        `Processed ${Math.min(i, limitedMessageFiles.length)}/${limitedMessageFiles.length} message files...`,
       );
     }
   }
 
-  if (!options?.quiet) {
-    const totalMessages = Array.from(messagesBySession.values()).reduce(
-      (total, msgs) => total + msgs.length,
-      0,
-    );
-    console.log(`Processed ${totalMessages} messages across all sessions`);
-  }
-
-  // Update cache with new entries
-  if (useCache && newCacheEntries.length > 0) {
-    const CACHE_VERSION = "3.0";
-    const updatedCache: CacheData = {
-      version: CACHE_VERSION,
-      entries: [...(cache?.entries || []), ...newCacheEntries],
-      lastProcessed: Date.now(),
-    };
-
-    // Remove duplicate entries (keep the most recent)
-    const uniqueEntries = new Map<string, CacheEntry>();
-    updatedCache.entries.forEach((entry) => {
-      const existing = uniqueEntries.get(entry.filePath);
-      if (!existing || entry.processedAt > existing.processedAt) {
-        uniqueEntries.set(entry.filePath, entry);
-      }
-    });
-
-    updatedCache.entries = Array.from(uniqueEntries.values());
-    await saveCache(dataDir, updatedCache);
-    if (!options?.quiet) {
-      console.log(`Updated cache with ${newCacheEntries.length} new entries`);
-    }
-
-    // Trigger garbage collection after cache update
-    runtime.gc();
-  }
-
-  // Use streaming approach to process sessions and reduce memory usage
+  // Build sessions from session map + messages
   const sessions: OpenCodeSession[] = [];
-  let processedCount = 0;
 
-  for await (const sessionData of streamProcessSessions(
-    sessionMap,
-    messagesBySession,
-  )) {
-    if (sessionData.messages.length > 0) {
-      sessions.push(sessionData as OpenCodeSession);
+  for (const [sessionId, sessionMeta] of sessionMap) {
+    const messages = messagesBySession.get(sessionId) || [];
+
+    let totalTokens = 0;
+    let totalCost = 0;
+    let provider = "unknown";
+    let model = "unknown";
+    let latestAssistantTime = 0;
+
+    for (const msg of messages) {
+      if (msg.role === "assistant" && msg.providerID && msg.modelID) {
+        const msgTime = msg.time?.created || 0;
+        if (msgTime > latestAssistantTime) {
+          latestAssistantTime = msgTime;
+          provider = msg.providerID;
+          model = msg.modelID;
+        }
+
+        if (msg.tokens) {
+          totalTokens += (msg.tokens.input || 0) + (msg.tokens.output || 0);
+          if (msg.tokens.cache) {
+            totalTokens += (msg.tokens.cache.read || 0) + (msg.tokens.cache.write || 0);
+          }
+        }
+
+        if (typeof msg.cost === "number") {
+          totalCost += msg.cost;
+        }
+      }
     }
 
-    processedCount++;
-    progressManager.updateProgress(processedCount, "Processing sessions");
-  }
+    const processedMessages = messages.map((msg) => ({
+      id: msg.id,
+      role: msg.role,
+      content: msg.content || "",
+      timestamp: new Date(msg.time.created).toISOString(),
+      tools: extractToolsFromMessage(msg),
+    })) as OpenCodeMessage[];
 
-  if (!options?.quiet) {
-    console.log(`Completed processing ${processedCount} sessions`);
+    if (processedMessages.length > 0) {
+      sessions.push({
+        id: sessionId,
+        title: sessionMeta.title || "Untitled Session",
+        time: {
+          created: sessionMeta.time.created,
+          updated: sessionMeta.time.updated,
+        },
+        messages: processedMessages,
+        tokens_used: totalTokens,
+        cost_cents:
+          isFinite(totalCost) && !isNaN(totalCost)
+            ? Math.round(totalCost * 100)
+            : 0,
+        model: { provider, model },
+      });
+    }
   }
-  progressManager.finish();
-
-  // Trigger garbage collection after processing all sessions
-  runtime.gc();
 
   return { sessions };
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+export async function loadOpenCodeData(options?: {
+  limit?: number;
+  cache?: boolean;
+  days?: number;
+  quiet?: boolean;
+  verbose?: boolean;
+}): Promise<OpenCodeData> {
+  const dataDir = await findOpenCodeDataDirectory();
+
+  // Try SQLite database first
+  if (await dbPathExists(dataDir)) {
+    return loadFromDatabase(dataDir, {
+      limit: options?.limit,
+      days: options?.days,
+      quiet: options?.quiet,
+    });
+  }
+
+  // Fall back to file-based storage
+  if (!options?.quiet) {
+    console.log("Database not found, falling back to file-based storage");
+  }
+  return loadFromFiles(dataDir, {
+    limit: options?.limit,
+    days: options?.days,
+    quiet: options?.quiet,
+    verbose: options?.verbose,
+  });
 }
 
 export async function loadAllData(options?: {
@@ -907,5 +529,5 @@ export async function loadAllData(options?: {
   verbose?: boolean;
   quiet?: boolean;
 }): Promise<OpenCodeData> {
-  return await loadOpenCodeData(options);
+  return loadOpenCodeData(options);
 }

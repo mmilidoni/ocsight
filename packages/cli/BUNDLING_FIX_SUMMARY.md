@@ -16,10 +16,10 @@ Updated `scripts/bundle-cli.cjs` to properly externalize all runtime dependencie
 
 ```javascript
 // Before (broken)
---platform=node --external:@heyhuynhgiabuu/ocsight-cli
+--platform=node --external:@mmilidoni/ocsight-cli
 
 // After (fixed)
---platform=node --external:@heyhuynhgiabuu/ocsight-cli --external:bun --external:fs --external:path --external:os --external:crypto --external:url --external:readline --external:node:*
+--platform=node --external:@mmilidoni/ocsight-cli --external:bun --external:fs --external:path --external:os --external:crypto --external:url --external:readline --external:node:*
 ```
 
 ## Key Changes
