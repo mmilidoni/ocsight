@@ -26,7 +26,6 @@ function run(cmd: string, cwd?: string): string {
 }
 
 async function fetchJson(url: string, options?: any): Promise<any> {
-  const { default: fetch } = await import("node-fetch");
   const response = await fetch(url, options);
   return response.json();
 }
