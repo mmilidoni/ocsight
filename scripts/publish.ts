@@ -15,7 +15,14 @@ process.env["OCSIGHT_VERSION"] = version;
 console.log("version:", version);
 
 function run(cmd: string, cwd?: string): string {
-  return execSync(cmd, { cwd, encoding: "utf8" }).trim();
+  const opts: any = { cwd, encoding: "utf8" };
+  if (process.platform === "win32" && cmd.startsWith("./")) {
+    cmd = "bash " + cmd.slice(2);
+    // Bash on Windows uses Unix-style : separator; convert from Windows ;
+    const winPath = process.env.PATH || process.env.Path || "";
+    opts.env = { ...process.env, PATH: winPath.split(";").join(":") };
+  }
+  return execSync(cmd, opts).trim();
 }
 
 async function fetchJson(url: string, options?: any): Promise<any> {
